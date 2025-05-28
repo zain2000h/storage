@@ -10,6 +10,7 @@ import { fileUploadFromRequest, Uploader, UploadRequest } from './uploader'
 import { getConfig } from '../config'
 import {
   ObjectAdminDelete,
+  ObjectAdminDeleteBatch,
   ObjectCreatedCopyEvent,
   ObjectCreatedMove,
   ObjectRemoved,
@@ -761,6 +762,65 @@ export class ObjectStorage {
     }
 
     return payload
+  }
+
+  /**
+   * Deletes all files in a bucket
+   * @param bucketId
+   */
+  async empty() {
+    await this.db.findBucketById(this.bucketId, 'name')
+    
+    while (true) {
+      const objects = await this.db.listObjects(
+        this.bucketId,
+        'id, name',
+        Math.floor(requestUrlLengthLimit / (36 + 3))
+      )
+
+      if (!(objects && objects.length > 0)) {
+        break
+      }
+
+      const deleted = await this.db.deleteObjects(
+        this.bucketId,
+        objects.map(({ id }) => id!),
+        'id'
+      )
+
+
+      if (deleted && deleted.length > 0) {
+        const prefixes = deleted.reduce((all, { name, version }) => {
+          const fileName = withOptionalVersion(
+            `${this.db.tenantId}/${this.bucketId}/${name}`,
+            version
+          )
+          all.push(fileName)
+          all.push(fileName + '.info')
+          return all
+        }, [] as string[])
+        // delete files from s3 asynchronously
+        await ObjectAdminDeleteBatch.send({
+          prefixes,
+          bucketId: this.bucketId,
+          tenant: this.db.tenant(),
+          reqId: this.db.reqId,
+        })
+      }
+
+      if (deleted?.length !== objects.length) {
+        const deletedNames = new Set(deleted?.map(({ name }) => name))
+        const remainingNames = objects
+          .filter(({ name }) => !deletedNames.has(name))
+          .map(({ name }) => name)
+
+        throw ERRORS.AccessDenied(
+          `Cannot delete: ${remainingNames.join(
+            ' ,'
+          )}, you may have SELECT but not DELETE permissions`
+        )
+      }
+    }
   }
 }
 

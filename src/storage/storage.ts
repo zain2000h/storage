@@ -1,14 +1,10 @@
-import { StorageBackendAdapter, withOptionalVersion } from './backend'
+import { StorageBackendAdapter } from './backend'
 import { Database, FindBucketFilters } from './database'
 import { ERRORS } from '@internal/errors'
 import { AssetRenderer, HeadRenderer, ImageRenderer } from './renderer'
 import { getFileSizeLimit, mustBeValidBucketName, parseFileSizeToBytes } from './limits'
-import { getConfig } from '../config'
 import { ObjectStorage } from './object'
 import { InfoRenderer } from '@storage/renderer/info'
-import { logger, logSchema } from '@internal/monitoring'
-
-const { requestUrlLengthLimit, storageS3Bucket } = getConfig()
 
 /**
  * Storage
@@ -173,58 +169,6 @@ export class Storage {
 
       return deleted
     })
-  }
-
-  /**
-   * Deletes all files in a bucket
-   * @param bucketId
-   */
-  async emptyBucket(bucketId: string) {
-    await this.findBucket(bucketId, 'name')
-
-    while (true) {
-      const objects = await this.db.listObjects(
-        bucketId,
-        'id, name',
-        Math.floor(requestUrlLengthLimit / (36 + 3))
-      )
-
-      if (!(objects && objects.length > 0)) {
-        break
-      }
-
-      const deleted = await this.db.deleteObjects(
-        bucketId,
-        objects.map(({ id }) => id!),
-        'id'
-      )
-
-      if (deleted && deleted.length > 0) {
-        const params = deleted.reduce((all, { name, version }) => {
-          const fileName = withOptionalVersion(`${this.db.tenantId}/${bucketId}/${name}`, version)
-          all.push(fileName)
-          all.push(fileName + '.info')
-          return all
-        }, [] as string[])
-        // delete files from s3 asynchronously
-        this.backend.deleteObjects(storageS3Bucket, params).catch((e) => {
-          logSchema.error(logger, 'Failed to delete objects from s3', { type: 's3', error: e })
-        })
-      }
-
-      if (deleted?.length !== objects.length) {
-        const deletedNames = new Set(deleted?.map(({ name }) => name))
-        const remainingNames = objects
-          .filter(({ name }) => !deletedNames.has(name))
-          .map(({ name }) => name)
-
-        throw ERRORS.AccessDenied(
-          `Cannot delete: ${remainingNames.join(
-            ' ,'
-          )}, you may have SELECT but not DELETE permissions`
-        )
-      }
-    }
   }
 
   validateMimeType(mimeType: string[]) {
